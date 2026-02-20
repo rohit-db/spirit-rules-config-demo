@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query
 from server.db import db
 from server.config import get_current_user
+from server.mock_data import mock_store
 from server.models import (
     RuleHeaderCreate,
     RuleHeaderUpdate,
@@ -34,10 +35,9 @@ def _row_to_header(row) -> dict:
     return d
 
 
-async def _get_pool_or_503():
+async def _get_pool_or_none():
+    """Return the database pool, or None if not configured (mock mode)."""
     pool = await db.get_pool()
-    if pool is None:
-        raise HTTPException(status_code=503, detail="Database not configured")
     return pool
 
 
@@ -58,13 +58,17 @@ async def _audit(conn, header_id: UUID, action: str, old_values=None, new_values
 
 # ---------- LIST ----------
 
-@router.get("", response_model=List[RuleHeaderResponse])
+@router.get("", response_model=None)
 async def list_rules(
     status: Optional[str] = Query(None),
     cost_category: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
 ):
-    pool = await _get_pool_or_503()
+    pool = await _get_pool_or_none()
+
+    if pool is None:
+        # Mock mode
+        return mock_store.list_headers(status=status, cost_category=cost_category, search=search)
 
     clauses: list[str] = []
     params: list = []
@@ -97,11 +101,19 @@ async def list_rules(
 
 # ---------- GET ----------
 
-@router.get("/{rule_id}", response_model=RuleHeaderResponse)
-async def get_rule(rule_id: UUID):
-    pool = await _get_pool_or_503()
+@router.get("/{rule_id}", response_model=None)
+async def get_rule(rule_id: str):
+    pool = await _get_pool_or_none()
+
+    if pool is None:
+        header = mock_store.get_header(rule_id)
+        if header is None:
+            raise HTTPException(status_code=404, detail="Rule not found")
+        return header
+
+    uid = UUID(rule_id)
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM rule_headers WHERE id = $1", rule_id)
+        row = await conn.fetchrow("SELECT * FROM rule_headers WHERE id = $1", uid)
     if row is None:
         raise HTTPException(status_code=404, detail="Rule not found")
     return RuleHeaderResponse(**_row_to_header(row))
@@ -109,9 +121,14 @@ async def get_rule(rule_id: UUID):
 
 # ---------- CREATE ----------
 
-@router.post("", response_model=RuleHeaderResponse, status_code=201)
+@router.post("", response_model=None, status_code=201)
 async def create_rule(body: RuleHeaderCreate):
-    pool = await _get_pool_or_503()
+    pool = await _get_pool_or_none()
+
+    if pool is None:
+        data = body.model_dump(mode="json")
+        return mock_store.create_header(data)
+
     user = get_current_user()
 
     async with pool.acquire() as conn:
@@ -143,12 +160,25 @@ async def create_rule(body: RuleHeaderCreate):
 
 # ---------- UPDATE ----------
 
-@router.put("/{rule_id}", response_model=RuleHeaderResponse)
-async def update_rule(rule_id: UUID, body: RuleHeaderUpdate):
-    pool = await _get_pool_or_503()
+@router.put("/{rule_id}", response_model=None)
+async def update_rule(rule_id: str, body: RuleHeaderUpdate):
+    pool = await _get_pool_or_none()
 
+    if pool is None:
+        header = mock_store.get_header(rule_id)
+        if header is None:
+            raise HTTPException(status_code=404, detail="Rule not found")
+        if header["status"] != "draft":
+            raise HTTPException(status_code=400, detail="Only draft rules can be edited")
+        updates = body.model_dump(exclude_none=True)
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+        result = mock_store.update_header(rule_id, updates)
+        return result
+
+    uid = UUID(rule_id)
     async with pool.acquire() as conn:
-        existing = await conn.fetchrow("SELECT * FROM rule_headers WHERE id = $1", rule_id)
+        existing = await conn.fetchrow("SELECT * FROM rule_headers WHERE id = $1", uid)
         if existing is None:
             raise HTTPException(status_code=404, detail="Rule not found")
         if existing["status"] != "draft":
@@ -171,13 +201,13 @@ async def update_rule(rule_id: UUID, body: RuleHeaderUpdate):
             f"UPDATE rule_headers SET {', '.join(set_clauses)} "
             f"WHERE id = ${idx} RETURNING *"
         )
-        params.append(rule_id)
+        params.append(uid)
 
         row = await conn.fetchrow(query, *params)
 
         old_values = {k: _serialize(existing[k]) for k in updates}
         new_values = {k: _serialize(row[k]) for k in updates}
-        await _audit(conn, rule_id, "update", old_values=old_values, new_values=new_values)
+        await _audit(conn, uid, "update", old_values=old_values, new_values=new_values)
 
     return RuleHeaderResponse(**_row_to_header(row))
 
@@ -185,33 +215,48 @@ async def update_rule(rule_id: UUID, body: RuleHeaderUpdate):
 # ---------- DELETE ----------
 
 @router.delete("/{rule_id}", status_code=204)
-async def delete_rule(rule_id: UUID):
-    pool = await _get_pool_or_503()
+async def delete_rule(rule_id: str):
+    pool = await _get_pool_or_none()
+
+    if pool is None:
+        if not mock_store.delete_header(rule_id):
+            raise HTTPException(status_code=404, detail="Rule not found")
+        return
+
+    uid = UUID(rule_id)
     user = get_current_user()
 
     async with pool.acquire() as conn:
-        existing = await conn.fetchrow("SELECT * FROM rule_headers WHERE id = $1", rule_id)
+        existing = await conn.fetchrow("SELECT * FROM rule_headers WHERE id = $1", uid)
         if existing is None:
             raise HTTPException(status_code=404, detail="Rule not found")
 
         await _audit(
             conn,
-            rule_id,
+            uid,
             "delete",
             old_values=_row_to_serializable(existing),
         )
-        await conn.execute("DELETE FROM rule_headers WHERE id = $1", rule_id)
+        await conn.execute("DELETE FROM rule_headers WHERE id = $1", uid)
 
 
 # ---------- CLONE ----------
 
-@router.post("/{rule_id}/clone", response_model=RuleHeaderResponse, status_code=201)
-async def clone_rule(rule_id: UUID):
-    pool = await _get_pool_or_503()
+@router.post("/{rule_id}/clone", response_model=None, status_code=201)
+async def clone_rule(rule_id: str):
+    pool = await _get_pool_or_none()
+
+    if pool is None:
+        result = mock_store.clone_header(rule_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Source rule not found")
+        return result
+
+    uid = UUID(rule_id)
     user = get_current_user()
 
     async with pool.acquire() as conn:
-        source = await conn.fetchrow("SELECT * FROM rule_headers WHERE id = $1", rule_id)
+        source = await conn.fetchrow("SELECT * FROM rule_headers WHERE id = $1", uid)
         if source is None:
             raise HTTPException(status_code=404, detail="Source rule not found")
 
@@ -238,12 +283,12 @@ async def clone_rule(rule_id: UUID):
             source["fixed_variable_pct_split"],
             source["fixed_variable_type"],
             new_version,
-            rule_id,
+            uid,
             user,
         )
 
         # Copy rule lines
-        lines = await conn.fetch("SELECT * FROM rule_lines WHERE header_id = $1", rule_id)
+        lines = await conn.fetch("SELECT * FROM rule_lines WHERE header_id = $1", uid)
         for line in lines:
             await conn.execute(
                 """
@@ -266,7 +311,7 @@ async def clone_rule(rule_id: UUID):
             conn,
             new_header["id"],
             "clone",
-            old_values={"cloned_from": str(rule_id)},
+            old_values={"cloned_from": str(uid)},
             new_values={"id": str(new_header["id"]), "version": new_version},
         )
 
@@ -275,12 +320,25 @@ async def clone_rule(rule_id: UUID):
 
 # ---------- STATUS TRANSITION ----------
 
-@router.put("/{rule_id}/status", response_model=RuleHeaderResponse)
-async def update_status(rule_id: UUID, body: StatusUpdate):
-    pool = await _get_pool_or_503()
+@router.put("/{rule_id}/status", response_model=None)
+async def update_status(rule_id: str, body: StatusUpdate):
+    pool = await _get_pool_or_none()
 
+    if pool is None:
+        result = mock_store.update_status(rule_id, body.status)
+        if result is None:
+            header = mock_store.get_header(rule_id)
+            if header is None:
+                raise HTTPException(status_code=404, detail="Rule not found")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot transition from '{header['status']}' to '{body.status}'",
+            )
+        return result
+
+    uid = UUID(rule_id)
     async with pool.acquire() as conn:
-        existing = await conn.fetchrow("SELECT * FROM rule_headers WHERE id = $1", rule_id)
+        existing = await conn.fetchrow("SELECT * FROM rule_headers WHERE id = $1", uid)
         if existing is None:
             raise HTTPException(status_code=404, detail="Rule not found")
 
@@ -297,12 +355,12 @@ async def update_status(rule_id: UUID, body: StatusUpdate):
         row = await conn.fetchrow(
             "UPDATE rule_headers SET status = $1, updated_at = NOW() WHERE id = $2 RETURNING *",
             new_status,
-            rule_id,
+            uid,
         )
 
         await _audit(
             conn,
-            rule_id,
+            uid,
             "status_change",
             old_values={"status": current_status},
             new_values={"status": new_status},
