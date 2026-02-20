@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 import os
 import logging
 from server.db import db
-from server.routes import health
+from server.routes import health, rules
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Spirit Rules Config", lifespan=lifespan)
 
 app.include_router(health.router)
+app.include_router(rules.router)
 
 frontend_dir = os.path.join(os.path.dirname(__file__), "frontend", "dist")
 if os.path.exists(frontend_dir):
