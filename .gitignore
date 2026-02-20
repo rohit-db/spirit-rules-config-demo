@@ -9,4 +9,5 @@ npm-debug.log*
 .vscode/
 *.swp
 .databricks/
+.bundle/
 .DS_Store

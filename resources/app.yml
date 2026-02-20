@@ -1,0 +1,15 @@
+resources:
+  apps:
+    spirit_rules_config:
+      name: "spirit-rules-config"
+      description: "Spirit Airlines Rules Configuration - Proration Rate Management"
+      source_code_path: .
+      resources:
+        - name: database
+          database:
+            instance_name: ${var.lakebase_instance_name}
+            database_name: ${var.lakebase_database_name}
+            permission: CAN_CONNECT_AND_CREATE
+      permissions:
+        - level: CAN_MANAGE
+          user_name: ${workspace.current_user.userName}

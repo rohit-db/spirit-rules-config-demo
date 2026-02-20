@@ -1,0 +1,30 @@
+bundle:
+  name: spirit-rules-config
+
+variables:
+  lakebase_instance_name:
+    description: "Name of the Lakebase database instance"
+    default: "spirit-rules-db"
+  lakebase_database_name:
+    description: "Name of the database within Lakebase"
+    default: "spirit_rules"
+
+include:
+  - resources/*.yml
+
+sync:
+  exclude:
+    - node_modules/
+    - .venv/
+    - __pycache__/
+    - frontend/src/
+    - frontend/node_modules/
+    - .git/
+    - docs/
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://fevm-serverless-jsr0s9.cloud.databricks.com
