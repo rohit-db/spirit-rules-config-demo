@@ -1,0 +1,20 @@
+resources:
+  postgres_projects:
+    spirit_rules_project:
+      project_id: ${var.lakebase_instance_name}
+      display_name: "Spirit Rules Lakebase"
+      pg_version: 17
+
+  postgres_branches:
+    spirit_rules_main:
+      parent: ${resources.postgres_projects.spirit_rules_project.id}
+      branch_id: "main"
+      no_expiry: true
+
+  postgres_endpoints:
+    spirit_rules_endpoint:
+      parent: ${resources.postgres_branches.spirit_rules_main.id}
+      endpoint_id: "primary"
+      endpoint_type: "ENDPOINT_TYPE_READ_WRITE"
+      autoscaling_limit_min_cu: ${var.autoscaling_min_cu}
+      autoscaling_limit_max_cu: ${var.autoscaling_max_cu}

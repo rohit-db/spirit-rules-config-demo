@@ -8,11 +8,19 @@ variables:
   lakebase_database_name:
     description: "Name of the database within Lakebase"
     default: "spirit_rules"
+  autoscaling_min_cu:
+    description: "Minimum compute units for Lakebase autoscaling"
+    default: 0.5
+  autoscaling_max_cu:
+    description: "Maximum compute units for Lakebase autoscaling (max - min <= 16)"
+    default: 2
 
 include:
   - resources/*.yml
 
 sync:
+  include:
+    - frontend/dist/**
   exclude:
     - node_modules/
     - .venv/
@@ -21,6 +29,7 @@ sync:
     - frontend/node_modules/
     - .git/
     - docs/
+    - scripts/
 
 targets:
   dev:
@@ -28,3 +37,8 @@ targets:
     default: true
     workspace:
       host: https://fevm-serverless-jsr0s9.cloud.databricks.com
+
+  # Customers: add your own target
+  # prod:
+  #   workspace:
+  #     host: https://your-workspace.cloud.databricks.com
