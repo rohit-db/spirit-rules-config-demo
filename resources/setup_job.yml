@@ -1,0 +1,15 @@
+resources:
+  jobs:
+    setup_lakebase:
+      name: "${var.app_name}-lakebase-setup"
+      tasks:
+        - task_key: init_database
+          notebook_task:
+            notebook_path: ../setup/init_lakebase.py
+            source: WORKSPACE
+            base_parameters:
+              project_id: ${var.lakebase_instance_name}
+              database_name: ${var.lakebase_database_name}
+              app_name: ${var.app_name}
+              secret_scope: ${var.secret_scope}
+              db_role: ${var.db_role}

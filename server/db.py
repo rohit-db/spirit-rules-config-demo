@@ -1,63 +1,77 @@
 import os
 import logging
+import base64
 import asyncpg
 from typing import Optional
-from server.config import get_oauth_token, get_workspace_client
+from server.config import get_workspace_client
 
 logger = logging.getLogger(__name__)
 
+SECRET_SCOPE = os.environ.get("SECRET_SCOPE", "spirit-rules-config")
 
-def _discover_lakebase_connection() -> dict:
-    """Discover Lakebase Autoscaling connection details via Databricks REST API."""
+
+def _read_secret(client, scope: str, key: str) -> str:
+    """Read a secret value from Databricks Secrets."""
+    resp = client.api_client.do(
+        "GET", "/api/2.0/secrets/get",
+        query={"scope": scope, "key": key},
+    )
+    return base64.b64decode(resp["value"]).decode("utf-8")
+
+
+def _get_connection_config() -> dict:
+    """Get Lakebase connection config from Databricks Secrets."""
     project_id = os.environ.get("LAKEBASE_PROJECT_ID")
-    branch_id = os.environ.get("LAKEBASE_BRANCH_ID", "main")
-    database = os.environ.get("LAKEBASE_DATABASE", "postgres")
-
     if not project_id:
-        # Fall back to legacy env vars for provisioned Lakebase
-        if os.environ.get("PGHOST"):
-            return {
-                "host": os.environ["PGHOST"],
-                "port": int(os.environ.get("PGPORT", "5432")),
-                "database": os.environ.get("PGDATABASE", "postgres"),
-                "user": os.environ.get("PGUSER", ""),
-            }
         return {}
 
     client = get_workspace_client()
 
-    # List endpoints via REST API (works with any SDK version)
-    branch_path = f"projects/{project_id}/branches/{branch_id}"
-    resp = client.api_client.do(
-        "GET",
-        f"/api/2.0/postgres/{branch_path}/endpoints",
-    )
-    endpoints = resp.get("endpoints", [])
-
-    host = None
-    for ep in endpoints:
-        status = ep.get("status", {})
-        ep_type = status.get("endpoint_type", "")
-        if "READ_WRITE" in ep_type:
-            hosts = status.get("hosts", {})
-            host = hosts.get("host")
-            break
-
-    if not host:
-        raise RuntimeError(f"No active read-write endpoint found for {branch_path}")
-
-    logger.info("Discovered Lakebase endpoint: %s", host)
-
-    # Resolve user identity
-    me = client.current_user.me()
-    user = me.user_name
+    try:
+        host = _read_secret(client, SECRET_SCOPE, "db-host")
+        user = _read_secret(client, SECRET_SCOPE, "db-user")
+        password = _read_secret(client, SECRET_SCOPE, "db-password")
+        database = _read_secret(client, SECRET_SCOPE, "db-name")
+        logger.info("Loaded credentials from secrets scope: %s", SECRET_SCOPE)
+    except Exception as e:
+        logger.warning("Could not read secrets (%s), falling back to endpoint discovery", e)
+        # Fall back to endpoint discovery + OAuth (for backwards compat)
+        return _discover_from_endpoint(client, project_id)
 
     return {
         "host": host,
         "port": 5432,
         "database": database,
         "user": user,
+        "password": password,
     }
+
+
+def _discover_from_endpoint(client, project_id: str) -> dict:
+    """Fall back to endpoint discovery with OAuth auth."""
+    from server.config import get_oauth_token
+
+    branch_id = os.environ.get("LAKEBASE_BRANCH_ID", "main")
+    database = os.environ.get("LAKEBASE_DATABASE", "postgres")
+    branch_path = f"projects/{project_id}/branches/{branch_id}"
+
+    resp = client.api_client.do(
+        "GET", f"/api/2.0/postgres/{branch_path}/endpoints",
+    )
+    for ep in resp.get("endpoints", []):
+        status = ep.get("status", {})
+        if "READ_WRITE" in status.get("endpoint_type", ""):
+            host = status.get("hosts", {}).get("host")
+            if host:
+                me = client.current_user.me()
+                return {
+                    "host": host,
+                    "port": 5432,
+                    "database": database,
+                    "user": me.user_name,
+                    "password": get_oauth_token(),
+                }
+    return {}
 
 
 class DatabasePool:
@@ -67,20 +81,19 @@ class DatabasePool:
     async def get_pool(self) -> Optional[asyncpg.Pool]:
         if self._pool is None:
             try:
-                conn = _discover_lakebase_connection()
+                conn = _get_connection_config()
                 if not conn:
-                    logger.warning("No Lakebase configuration found — database not available")
+                    logger.warning("No Lakebase configuration — database not available")
                     return None
 
-                token = get_oauth_token()
-                logger.info("Connecting to Lakebase: host=%s port=%d db=%s user=%s",
-                            conn["host"], conn["port"], conn["database"], conn["user"])
+                logger.info("Connecting to Lakebase: host=%s db=%s user=%s",
+                            conn["host"], conn["database"], conn["user"])
                 self._pool = await asyncpg.create_pool(
                     host=conn["host"],
                     port=conn["port"],
                     database=conn["database"],
                     user=conn["user"],
-                    password=token,
+                    password=conn["password"],
                     ssl="require",
                     min_size=2,
                     max_size=10,

@@ -8,10 +8,9 @@ command:
   - "--port"
   - "8000"
 
+# Update these to match your databricks.yml variables
 env:
   - name: LAKEBASE_PROJECT_ID
     value: "spirit-rules-db"
-  - name: LAKEBASE_BRANCH_ID
-    value: "main"
-  - name: LAKEBASE_DATABASE
-    value: "spirit_rules"
+  - name: SECRET_SCOPE
+    value: "spirit-rules-config"

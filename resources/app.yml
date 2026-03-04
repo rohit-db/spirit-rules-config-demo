@@ -1,8 +1,8 @@
 resources:
   apps:
     spirit_rules_config:
-      name: "spirit-rules-config"
-      description: "Spirit Airlines Rules Configuration - Proration Rate Management"
+      name: ${var.app_name}
+      description: "Rules Configuration - Proration Rate Management"
       source_code_path: .
       resources:
         - name: database

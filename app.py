@@ -19,9 +19,12 @@ async def _init_schema():
     schema_path = os.path.join(os.path.dirname(__file__), "server", "schema.sql")
     with open(schema_path) as f:
         sql = f.read()
-    async with pool.acquire() as conn:
-        await conn.execute(sql)
-    logger.info("Database schema initialized")
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(sql)
+        logger.info("Database schema initialized")
+    except Exception as e:
+        logger.warning("Schema init skipped (tables may already exist): %s", e)
 
 
 @asynccontextmanager
