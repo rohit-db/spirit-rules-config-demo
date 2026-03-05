@@ -10,7 +10,7 @@ command:
 
 # Update these to match your databricks.yml variables
 env:
-  - name: LAKEBASE_PROJECT_ID
-    value: "spirit-rules-db"
+  - name: LAKEBASE_INSTANCE_NAME
+    value: "spirit-rules-db"        # must match lakebase_instance_name in databricks.yml
   - name: SECRET_SCOPE
-    value: "spirit-rules-config"
+    value: "spirit-rules-config"    # must match secret_scope in databricks.yml

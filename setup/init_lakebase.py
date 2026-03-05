@@ -12,11 +12,12 @@
 import psycopg2
 import secrets
 import string
+import time
 import uuid
 from databricks.sdk import WorkspaceClient
 
 # Read config from job parameters (set in databricks.yml variables)
-PROJECT_ID = dbutils.widgets.get("project_id")
+INSTANCE_NAME = dbutils.widgets.get("instance_name")
 DATABASE_NAME = dbutils.widgets.get("database_name")
 APP_NAME = dbutils.widgets.get("app_name")
 SECRET_SCOPE = dbutils.widgets.get("secret_scope")
@@ -26,33 +27,75 @@ w = WorkspaceClient()
 me = w.current_user.me()
 print(f"Running as: {me.user_name}")
 
-# Get Lakebase instance info and credential
-instance = w.database.get_database_instance(name=PROJECT_ID)
-host = instance.read_write_dns
-print(f"Endpoint host: {host}")
+# Wait for provisioned Lakebase instance to be AVAILABLE (can take several minutes)
+MAX_WAIT = 600  # 10 minutes
+POLL_INTERVAL = 15
+waited = 0
+host = None
 
-cred = w.database.generate_database_credential(
-    request_id=str(uuid.uuid4()),
-    instance_names=[PROJECT_ID],
-)
-token = cred.token
+print(f"Waiting for Lakebase instance '{INSTANCE_NAME}' to become AVAILABLE...")
+while waited < MAX_WAIT:
+    try:
+        resp = w.api_client.do("GET", f"/api/2.0/database/instances/{INSTANCE_NAME}")
+        state = resp.get("state", "UNKNOWN")
+        host = resp.get("read_write_dns")
+        print(f"  State: {state}, DNS: {host} ({waited}s)")
+        if state == "AVAILABLE" and host:
+            break
+        host = None  # Not ready yet
+    except Exception as e:
+        print(f"  Instance not found yet ({waited}s): {e}")
+
+    time.sleep(POLL_INTERVAL)
+    waited += POLL_INTERVAL
+
+if not host:
+    raise RuntimeError(
+        f"Lakebase instance '{INSTANCE_NAME}' did not become AVAILABLE within {MAX_WAIT}s. "
+        "Provisioned instances can take several minutes. Re-run this job to retry."
+    )
+
+print(f"Instance ready! Host: {host}")
+
+# Generate a temporary credential to connect as admin
+cred = w.api_client.do("POST", "/api/2.0/database/credentials", body={
+    "request_id": str(uuid.uuid4()),
+    "instance_names": [INSTANCE_NAME],
+})
+token = cred.get("token") or cred.get("password")
 print("Generated database credential")
 
-# Verify connectivity
-conn = psycopg2.connect(
-    host=host, port=5432, dbname="databricks_postgres",
-    user=me.user_name, password=token, sslmode="require",
-)
-conn.autocommit = True
-cur = conn.cursor()
-cur.execute("SELECT 1 AS ok")
-print(f"Endpoint reachable: {cur.fetchone()}")
-cur.close()
-conn.close()
+# Wait for instance to accept connections
+connect_waited = 0
+print("Waiting for instance to accept connections...")
+while connect_waited < MAX_WAIT:
+    try:
+        conn = psycopg2.connect(
+            host=host, port=5432, dbname="postgres",
+            user=me.user_name, password=token, sslmode="require",
+            connect_timeout=10,
+        )
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SELECT 1 AS ok")
+        print(f"Instance reachable: {cur.fetchone()}")
+        cur.close()
+        conn.close()
+        break
+    except Exception as e:
+        print(f"  Not accepting connections yet ({connect_waited}s): {e}")
+        time.sleep(POLL_INTERVAL)
+        connect_waited += POLL_INTERVAL
+
+if connect_waited >= MAX_WAIT:
+    raise RuntimeError(
+        f"Lakebase instance not accepting connections after {MAX_WAIT}s. "
+        "Re-run this job to retry."
+    )
 
 # Create database
 conn = psycopg2.connect(
-    host=host, port=5432, dbname="databricks_postgres",
+    host=host, port=5432, dbname="postgres",
     user=me.user_name, password=token, sslmode="require",
 )
 conn.autocommit = True
@@ -181,11 +224,32 @@ print("Stored credentials in secrets")
 # Grant app service principal READ access to secrets
 try:
     app_info = w.api_client.do("GET", f"/api/2.0/apps/{APP_NAME}")
-    sp_id = app_info.get("service_principal_client_id")
-    if sp_id:
-        w.secrets.put_acl(scope=SECRET_SCOPE, principal=sp_id, permission="READ")
-        print(f"Granted secret READ to app SP: {sp_id}")
+    sp_client_id = app_info.get("service_principal_client_id")
+    sp_name = app_info.get("service_principal_name")
+    print(f"App SP: client_id={sp_client_id}, name={sp_name}")
+
+    # Try granting by client_id first, then by name, then REST API
+    granted = False
+    for principal in [sp_client_id, sp_name]:
+        if not principal:
+            continue
+        try:
+            w.secrets.put_acl(scope=SECRET_SCOPE, principal=principal, permission="READ")
+            print(f"Granted secret READ to: {principal}")
+            granted = True
+            break
+        except Exception as acl_err:
+            print(f"  put_acl with '{principal}' failed: {acl_err}")
+
+    if not granted:
+        w.api_client.do("POST", "/api/2.0/secrets/acls/put", body={
+            "scope": SECRET_SCOPE,
+            "principal": sp_client_id,
+            "permission": "READ",
+        })
+        print(f"Granted secret READ via REST API to: {sp_client_id}")
 except Exception as e:
     print(f"WARNING: Could not grant SP access: {e}")
+    print(f"Manual fix: databricks secrets put-acl {SECRET_SCOPE} <sp-client-id> READ")
 
 print("Setup complete!")

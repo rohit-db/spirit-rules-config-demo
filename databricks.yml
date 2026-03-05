@@ -20,12 +20,9 @@ variables:
   db_role:
     description: "Postgres role name the app uses to connect"
     default: "spirit_rules_app"
-  autoscaling_min_cu:
-    description: "Minimum compute units for Lakebase autoscaling"
-    default: 0.5
-  autoscaling_max_cu:
-    description: "Maximum compute units for Lakebase autoscaling (max - min <= 16)"
-    default: 2
+  lakebase_capacity:
+    description: "Lakebase instance size: CU_1, CU_2, CU_4, or CU_8"
+    default: "CU_1"
 
 include:
   - resources/*.yml
@@ -47,12 +44,11 @@ targets:
     mode: development
     default: true
     workspace:
-      host: https://your-workspace.cloud.databricks.com
+      host: https://fevm-serverless-jsr0s9.cloud.databricks.com
 
   # Example: override variables per target
   # prod:
   #   workspace:
   #     host: https://your-prod-workspace.cloud.databricks.com
   #   variables:
-  #     autoscaling_min_cu: 1
-  #     autoscaling_max_cu: 4
+  #     lakebase_capacity: "CU_2"

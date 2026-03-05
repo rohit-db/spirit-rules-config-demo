@@ -4,12 +4,9 @@ resources:
       name: ${var.app_name}
       description: "Rules Configuration - Proration Rate Management"
       source_code_path: .
-      resources:
-        - name: database
-          database:
-            instance_name: ${var.lakebase_instance_name}
-            database_name: ${var.lakebase_database_name}
-            permission: CAN_CONNECT_AND_CREATE
+      # Note: No Lakebase resource binding here. The app connects via
+      # Databricks Secrets (set up by the setup_lakebase job). This avoids
+      # deploy failures when the provisioned endpoint is still starting up.
       permissions:
         - level: CAN_MANAGE
           user_name: ${workspace.current_user.userName}

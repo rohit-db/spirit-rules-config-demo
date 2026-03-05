@@ -8,7 +8,7 @@ resources:
             notebook_path: ../setup/init_lakebase.py
             source: WORKSPACE
             base_parameters:
-              project_id: ${var.lakebase_instance_name}
+              instance_name: ${var.lakebase_instance_name}
               database_name: ${var.lakebase_database_name}
               app_name: ${var.app_name}
               secret_scope: ${var.secret_scope}

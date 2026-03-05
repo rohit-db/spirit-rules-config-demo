@@ -14,7 +14,7 @@ async def _init_schema():
     """Execute schema.sql against the database if available."""
     pool = await db.get_pool()
     if pool is None:
-        logger.warning("Skipping schema init — database not available")
+        logger.info("Database not available yet — schema init will happen on first successful connection")
         return
     schema_path = os.path.join(os.path.dirname(__file__), "server", "schema.sql")
     with open(schema_path) as f:
@@ -23,12 +23,16 @@ async def _init_schema():
         async with pool.acquire() as conn:
             await conn.execute(sql)
         logger.info("Database schema initialized")
+        db.schema_initialized = True
     except Exception as e:
         logger.warning("Schema init skipped (tables may already exist): %s", e)
+        db.schema_initialized = True
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    db.schema_initialized = False
+    db.schema_sql = os.path.join(os.path.dirname(__file__), "server", "schema.sql")
     await _init_schema()
     yield
     await db.close()
